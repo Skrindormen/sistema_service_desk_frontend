@@ -1,1032 +1,491 @@
-import React, { useState, useEffect } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import api from "../services/api";
+import {
+  listTickets, getTicket, listTicketComments,
+  createTicket as postTicket, updateTicket as putTicket,
+  cancelTicket as cancelTicketRequest, addTicketComment as postTicketComment,
+} from "../services/tickets";
+import {
+  listEquipment, createEquipment as postEquipment,
+  updateEquipment as putEquipment, deactivateEquipment as removeEquipment,
+} from "../services/equipment";
+import { listLocals } from "../services/locals";
+import { nomePerfil } from "../auth/permissions";
+import OverviewPage from "../components/OverviewPage";
+import TicketsPage from "../components/TicketsPage";
+import NewTicketPage from "../components/NewTicketPage";
+import TicketDetailsPage from "../components/TicketDetailsPage";
+import EquipmentPage from "../components/EquipmentPage";
+
+const PAGE_SIZE = 10;
+const EMPTY_PAGINATION = { page: 1, totalPages: 1, total: 0 };
+
+function readCurrentUser() {
+  try {
+    return JSON.parse(localStorage.getItem("currentUser") || "null");
+  } catch {
+    return null;
+  }
+}
+
+function responseMessage(error, fallback) {
+  return error.response?.data?.message || fallback;
+}
 
 export default function Dashboard() {
-  const [chamados, setChamados] = useState([]);
-  const [carregando, setCarregando] = useState(true);
-  const [chamadoSelecionado, setChamadoSelecionado] = useState(null);
-
-  // Memória para saber qual aba está ativa no menu principal
-  const [abaAtiva, setAbaAtiva] = useState("visao-geral");
-
-  // Estados para os Filtros Dinâmicos da Tabela (Passo 3)
-  const [filtroStatus, setFiltroStatus] = useState("");
-  const [filtroPrioridade, setFiltroPrioridade] = useState("");
-
-  // Estado e dados para a Gestão de Equipamentos / ITAM (Passo 4)
-  const [equipamentos, setEquipamentos] = useState([]);
-  const [patrimonio, setPatrimonio] = useState("");
-  const [laboratorio, setLaboratorio] = useState("");
-
   const navigate = useNavigate();
+  const [user] = useState(readCurrentUser);
+  const role = user?.tipo;
+  const name = user?.nome || "Usuário";
+
+  const [screen, setScreen] = useState("overview");
+  const [tickets, setTickets] = useState([]);
+  const [ticketPagination, setTicketPagination] = useState(EMPTY_PAGINATION);
+  const [ticketPage, setTicketPage] = useState(1);
+  const [titleInput, setTitleInput] = useState("");
+  const [titleQuery, setTitleQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [priorityFilter, setPriorityFilter] = useState("");
+  const [ticketRefresh, setTicketRefresh] = useState(0);
+  const [loadingTickets, setLoadingTickets] = useState(true);
+  const [selectedTicket, setSelectedTicket] = useState(null);
+  const [comments, setComments] = useState([]);
+  const [loadingDetail, setLoadingDetail] = useState(false);
+  const [loadingComments, setLoadingComments] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [pageError, setPageError] = useState("");
+  const [notice, setNotice] = useState("");
+
+  const [locals, setLocals] = useState([]);
+  const [equipmentOptions, setEquipmentOptions] = useState([]);
+  const [loadingCatalog, setLoadingCatalog] = useState(false);
+  const [catalogError, setCatalogError] = useState("");
+
+  const [equipmentList, setEquipmentList] = useState([]);
+  const [equipmentPagination, setEquipmentPagination] = useState(EMPTY_PAGINATION);
+  const [equipmentPage, setEquipmentPage] = useState(1);
+  const [equipmentRefresh, setEquipmentRefresh] = useState(0);
+  const [loadingEquipment, setLoadingEquipment] = useState(false);
+  const [editingEquipmentId, setEditingEquipmentId] = useState(null);
+  const [equipmentForm, setEquipmentForm] = useState({ nome: "", descricao: "", id_local: "" });
+
+
+  const detailRequestId = useRef(0);
+
 
   useEffect(() => {
-    async function carregarDados() {
-      try {
-        const respostaChamados = await api.get("/tickets");
-        setChamados(respostaChamados.data.data || []);
-
-        // Tenta buscar os equipamentos se a rota existir no backend
-        try {
-          const respostaEquip = await api.get("/equipment");
-          setEquipamentos(respostaEquip.data.data || []);
-        } catch (e) {
-          console.log("Módulo de equipamentos simulado localmente.");
-        }
-      } catch (erro) {
-        console.error("Erro ao buscar dados do servidor:", erro);
-      } finally {
-        setCarregando(false);
-      }
+    if (!localStorage.getItem("accessToken") || !role) {
+      localStorage.removeItem("accessToken");
+      localStorage.removeItem("currentUser");
+      navigate("/login", { replace: true });
     }
-    carregarDados();
-  }, [navigate]);
+  }, [navigate, role]);
 
-  const handleSair = () => {
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setTitleQuery(titleInput.trim());
+      setTicketPage(1);
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [titleInput]);
+
+  useEffect(() => {
+    if (!role || !localStorage.getItem("accessToken")) return undefined;
+    const controller = new AbortController();
+    const params = { page: ticketPage, limit: PAGE_SIZE };
+    if (titleQuery) params.titulo = titleQuery;
+    if (statusFilter) params.status = statusFilter;
+    if (priorityFilter) params.prioridade = priorityFilter;
+
+    setLoadingTickets(true);
+    setPageError("");
+    listTickets(params, controller.signal)
+      .then((response) => {
+        setTickets(response.items);
+        const info = response.pagination || {};
+        setTicketPagination({
+          page: Number(info.page || ticketPage),
+          totalPages: Math.max(1, Number(info.totalPages || 1)),
+          total: Number(info.total || 0),
+        });
+      })
+      .catch((error) => {
+        if (error.code !== "ERR_CANCELED") {
+          setPageError(responseMessage(error, "Não foi possível carregar os chamados."));
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoadingTickets(false);
+      });
+
+    return () => controller.abort();
+  }, [role, ticketPage, titleQuery, statusFilter, priorityFilter, ticketRefresh]);
+
+  const loadCatalog = useCallback(async () => {
+    setLoadingCatalog(true);
+    setCatalogError("");
+    const [localsResult, equipmentResult] = await Promise.allSettled([
+      listLocals({ page: 1, limit: 100 }),
+      listEquipment({ page: 1, limit: 100 }),
+    ]);
+    if (localsResult.status === "fulfilled") setLocals(localsResult.value.items);
+    else {
+      setLocals([]);
+      setCatalogError(responseMessage(localsResult.reason, "Não foi possível carregar os locais."));
+    }
+    if (equipmentResult.status === "fulfilled") setEquipmentOptions(equipmentResult.value.items);
+    else {
+      setEquipmentOptions([]);
+      setCatalogError((old) => old
+        ? old + " A lista de equipamentos também não está disponível."
+        : responseMessage(equipmentResult.reason, "Não foi possível carregar os equipamentos."));
+    }
+    setLoadingCatalog(false);
+  }, []);
+
+  const loadEquipmentList = useCallback(async () => {
+    setLoadingEquipment(true);
+    setPageError("");
+    const [equipmentResult, localsResult] = await Promise.allSettled([
+      listEquipment({ page: equipmentPage, limit: PAGE_SIZE }),
+      listLocals({ page: 1, limit: 100 }),
+    ]);
+    if (equipmentResult.status === "fulfilled") {
+      setEquipmentList(equipmentResult.value.items);
+      const info = equipmentResult.value.pagination || {};
+      setEquipmentPagination({
+        page: Number(info.page || equipmentPage),
+        totalPages: Math.max(1, Number(info.totalPages || 1)),
+        total: Number(info.total || 0),
+      });
+    } else {
+      setPageError(responseMessage(equipmentResult.reason, "Não foi possível carregar o inventário."));
+      setEquipmentList([]);
+    }
+    if (localsResult.status === "fulfilled") setLocals(localsResult.value.items);
+    else setPageError((old) => old || responseMessage(localsResult.reason, "Não foi possível carregar os locais."));
+    setLoadingEquipment(false);
+  }, [equipmentPage]);
+
+  useEffect(() => {
+    if (screen === "equipment" && role === "Admin") loadEquipmentList();
+  }, [screen, role, equipmentPage, equipmentRefresh, loadEquipmentList]);
+
+  const refreshTickets = useCallback(() => setTicketRefresh((value) => value + 1), []);
+  const refreshEquipment = useCallback(() => setEquipmentRefresh((value) => value + 1), []);
+
+  async function loadTicketDetails(ticketId) {
+    const requestId = ++detailRequestId.current;
+    setLoadingDetail(true);
+    setLoadingComments(true);
+    setPageError("");
+
+    const [ticketResult, commentsResult] = await Promise.allSettled([
+      getTicket(ticketId),
+      listTicketComments(ticketId),
+    ]);
+    if (requestId !== detailRequestId.current) return;
+
+    if (ticketResult.status === "fulfilled") {
+      const ticket = ticketResult.value;
+      if (ticket && !Array.isArray(ticket)) setSelectedTicket(ticket);
+    } else {
+      setPageError(responseMessage(ticketResult.reason, "Não foi possível abrir os detalhes deste chamado."));
+    }
+    if (commentsResult.status === "fulfilled") setComments(commentsResult.value);
+    else {
+      setComments([]);
+      setPageError((old) => old || responseMessage(commentsResult.reason, "Não foi possível carregar os comentários."));
+    }
+    setLoadingDetail(false);
+    setLoadingComments(false);
+  }
+
+  function openTicket(ticket) {
+    setSelectedTicket(ticket);
+    setComments([]);
+    setScreen("ticket-detail");
+    loadTicketDetails(ticket.id);
+  }
+
+  function logout() {
     localStorage.removeItem("accessToken");
-    navigate("/");
-  };
+    localStorage.removeItem("currentUser");
+    navigate("/login", { replace: true });
+  }
 
-  // Lógica de filtragem dinâmica para a tabela de chamados (Thin Client filter)
-  const chamadosFiltrados = chamados.filter((chamado) => {
-    const matchStatus = filtroStatus
-      ? chamado.status?.toLowerCase() === filtroStatus.toLowerCase()
-      : true;
-    const matchPrioridade = filtroPrioridade
-      ? chamado.prioridade?.toLowerCase() === filtroPrioridade.toLowerCase()
-      : true;
-    return matchStatus && matchPrioridade;
-  });
+  async function createTicket(payload) {
+    setSubmitting(true);
+    setPageError("");
+    setNotice("");
+    try {
+      await postTicket(payload);
+      setScreen("tickets");
+      setTitleInput("");
+      setTitleQuery("");
+      setStatusFilter("");
+      setPriorityFilter("");
+      setTicketPage(1);
+      refreshTickets();
+      setNotice("Chamado criado com sucesso.");
+    } catch (error) {
+      setPageError(responseMessage(error, "Não foi possível criar o chamado."));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function updateTicket(event) {
+    event.preventDefault();
+    if (!selectedTicket) return;
+    const data = new FormData(event.currentTarget);
+    const payload = {
+      status: data.get("status"),
+      prioridade: data.get("prioridade"),
+      nivel_atendimento: data.get("nivel_atendimento"),
+    };
+    const assigneeId = data.get("id_tecnico_atribuido");
+    if (assigneeId) payload.id_tecnico_atribuido = Number(assigneeId);
+
+    setSubmitting(true);
+    setPageError("");
+    setNotice("");
+    try {
+      await putTicket(selectedTicket.id, payload);
+      setNotice("Alterações salvas.");
+      refreshTickets();
+      loadTicketDetails(selectedTicket.id);
+    } catch (error) {
+      setPageError(responseMessage(error, "Não foi possível atualizar o chamado."));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function cancelTicket(event) {
+    event.preventDefault();
+    if (!selectedTicket) return;
+    const data = new FormData(event.currentTarget);
+    setSubmitting(true);
+    setPageError("");
+    setNotice("");
+    try {
+      await cancelTicketRequest(selectedTicket.id, {
+        justificativa: String(data.get("justificativa") || "").trim(),
+      });
+      setNotice("Chamado cancelado.");
+      refreshTickets();
+      loadTicketDetails(selectedTicket.id);
+    } catch (error) {
+      setPageError(responseMessage(error, "Não foi possível cancelar o chamado."));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function addComment(event) {
+    event.preventDefault();
+    if (!selectedTicket) return;
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const text = String(data.get("comentario") || "").trim();
+    if (!text) return;
+    setSubmitting(true);
+    setPageError("");
+    setNotice("");
+    try {
+      await postTicketComment(selectedTicket.id, { comentario: text });
+      const response = await listTicketComments(selectedTicket.id);
+      setComments(response);
+      setNotice("Comentário registrado.");
+      form.reset();
+    } catch (error) {
+      setPageError(responseMessage(error, "Não foi possível registrar o comentário."));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  function updateEquipmentForm(event) {
+    const { name, value } = event.target;
+    setEquipmentForm((old) => ({ ...old, [name]: value }));
+  }
+
+  function editEquipment(item) {
+    setEditingEquipmentId(item.id);
+    setEquipmentForm({
+      nome: item.nome || "",
+      descricao: item.descricao || "",
+      id_local: String(item.id_local || ""),
+    });
+  }
+
+  function clearEquipmentForm() {
+    setEditingEquipmentId(null);
+    setEquipmentForm({ nome: "", descricao: "", id_local: "" });
+  }
+
+  async function saveEquipment(event) {
+    event.preventDefault();
+    const payload = {
+      nome: equipmentForm.nome.trim(),
+      descricao: equipmentForm.descricao.trim(),
+      id_local: Number(equipmentForm.id_local),
+    };
+    setSubmitting(true);
+    setPageError("");
+    setNotice("");
+    try {
+      if (editingEquipmentId) {
+        await putEquipment(editingEquipmentId, payload);
+        setNotice("Equipamento atualizado.");
+      } else {
+        await postEquipment(payload);
+        setNotice("Equipamento cadastrado.");
+      }
+      clearEquipmentForm();
+      refreshEquipment();
+    } catch (error) {
+      setPageError(responseMessage(error, "Não foi possível salvar o equipamento."));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function deactivateEquipment(item) {
+    if (!window.confirm("Desativar " + item.nome + "?")) return;
+    setPageError("");
+    setNotice("");
+    setSubmitting(true);
+    try {
+      await removeEquipment(item.id);
+      setNotice("Equipamento desativado.");
+      refreshEquipment();
+    } catch (error) {
+      setPageError(responseMessage(error, "Não foi possível desativar o equipamento."));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  function openOverview() {
+    setScreen("overview");
+    setTicketPage(1);
+    setTitleInput("");
+    setTitleQuery("");
+    setStatusFilter("");
+    setPriorityFilter("");
+  }
+  function openNewTicket() {
+    setPageError("");
+    setNotice("");
+    setScreen("new-ticket");
+  }
+
+  function openEquipment() {
+    setPageError("");
+    setNotice("");
+    setEquipmentPage(1);
+    setScreen("equipment");
+  }
+
+  const pageTitle = {
+    overview: "Visão geral",
+    tickets: "Chamados",
+    "new-ticket": "Abrir chamado",
+    "ticket-detail": "Detalhes do chamado",
+    equipment: "Inventário de equipamentos",
+  }[screen];
+
+  if (!role) return null;
 
   return (
     <div className="app-shell">
-      {/* MENU PRINCIPAL (LATERAL) */}
       <aside className="sidebar">
-        <div className="brand" style={{ paddingBottom: "20px" }}>
+        <div className="brand">
           <div className="brand-mark">F</div>
-          <div>
-            FATEC <b>TI</b>
-            <small>Service Desk</small>
-          </div>
+          <div className="brand-name">FATEC <b>TI</b><small>Service Desk</small></div>
         </div>
-
-        <nav>
-          <button
-            className={`nav-link ${abaAtiva === "visao-geral" ? "active" : ""}`}
-            onClick={() => setAbaAtiva("visao-geral")}
-          >
-            <span className="nav-icon">⌂</span>
-            Visão geral
-          </button>
-
-          <button
-            className={`nav-link ${abaAtiva === "chamados" ? "active" : ""}`}
-            onClick={() => setAbaAtiva("chamados")}
-          >
-            <span className="nav-icon">≡</span>
-            Chamados
-          </button>
-
-          <button
-            className={`nav-link ${abaAtiva === "equipamentos" ? "active" : ""}`}
-            onClick={() => setAbaAtiva("equipamentos")}
-          >
-            <span className="nav-icon">⚙</span>
-            Equipamentos
-          </button>
+        <nav className="sidebar-nav" aria-label="Navegação principal">
+          <button className={"nav-link " + (screen === "overview" ? "active" : "")} type="button" onClick={openOverview}><span className="nav-icon">⌂</span>Visão geral</button>
+          <button className={"nav-link " + (["tickets", "ticket-detail", "new-ticket"].includes(screen) ? "active" : "")} type="button" onClick={() => setScreen("tickets")}><span className="nav-icon">≡</span>Chamados</button>
+          {role === "Admin" && <button className={"nav-link " + (screen === "equipment" ? "active" : "")} type="button" onClick={openEquipment}><span className="nav-icon">◇</span>Equipamentos</button>}
         </nav>
-
-        <div className="sidebar-bottom">
-          <div className="avatar">U</div>
-          <div>
-            <strong>Minha Conta</strong>
-            <small
-              onClick={handleSair}
-              style={{ cursor: "pointer", color: "var(--cor-vermelho)" }}
-            >
-              Sair do sistema
-            </small>
-          </div>
+        <div className="sidebar-account">
+          <div className="avatar">{name.trim().charAt(0).toUpperCase() || "U"}</div>
+          <div className="account-copy"><strong>{name}</strong><small>{nomePerfil(role)}</small><button className="signout-button" type="button" onClick={logout}>Sair do sistema</button></div>
         </div>
       </aside>
 
-      {/* ÁREA DE CONTEÚDO PRINCIPAL */}
       <main className="main-column">
-        {/* ABA: VISÃO GERAL */}
-        {abaAtiva === "visao-geral" && (
-          <>
-            <header className="topbar">
-              <div>
-                <span className="topbar-kicker">SERVICE DESK</span>
-                <strong>Visão geral</strong>
-              </div>
-            </header>
+        <header className="topbar">
+          <div><span className="topbar-kicker">SERVICE DESK</span><strong>{pageTitle}</strong></div>
+          <div className="topbar-profile">
+            <span className="role-pill">{nomePerfil(role)}</span>
+            {["overview", "tickets"].includes(screen) && <button className="button button-primary" type="button" onClick={openNewTicket}>+ Novo chamado</button>}
+          </div>
+        </header>
 
-            <div className="content">
-              <div className="welcome-row">
-                <div>
-                  <p className="eyebrow">CENTRAL DE SUPORTE</p>
-                  <h1>
-                    Olá, equipe de <span>suporte</span> ✨
-                  </h1>
-                  <p>
-                    Acompanhe os chamados conectados diretamente ao banco de
-                    dados TiDB.
-                  </p>
-                </div>
-              </div>
+        <div className="content">
+          {pageError && <div className="notice notice-error" role="alert"><span className="notice-icon">!</span><span>{pageError}</span><button type="button" onClick={() => setPageError("")} aria-label="Fechar aviso">×</button></div>}
+          {notice && <div className="notice notice-success" role="status"><span>{notice}</span><button type="button" onClick={() => setNotice("")} aria-label="Fechar aviso">×</button></div>}
 
-              <div className="stats-grid">
-                <div className="stat-card">
-                  <div className="stat-icon amber">!</div>
-                  <div className="stat-label">Total de Chamados</div>
-                  <strong>{carregando ? "-" : chamados.length}</strong>
-                  <small>Registrados no sistema</small>
-                </div>
-                <div className="stat-card">
-                  <div className="stat-icon">⚙</div>
-                  <div className="stat-label">Ativos Cadastrados</div>
-                  <strong>{equipamentos.length}</strong>
-                  <small>Equipamentos no inventário</small>
-                </div>
-              </div>
-
-              <div className="panel table-panel">
-                <div className="panel-heading">
-                  <h2>Últimas solicitações</h2>
-                </div>
-                <div className="table-wrap">
-                  <p style={{ padding: "20px" }}>
-                    {carregando
-                      ? "Carregando..."
-                      : `${chamados.length} chamados sincronizados com o servidor.`}
-                  </p>
-                </div>
-              </div>
-            </div>
-          </>
-        )}
-
-        {/* ABA: LISTA DE CHAMADOS COM FILTROS DINÂMICOS (PASSO 3) */}
-        {abaAtiva === "chamados" && (
-          <>
-            <header className="topbar">
-              <div>
-                <span className="topbar-kicker">GERENCIAMENTO</span>
-                <strong>Lista de Chamados</strong>
-              </div>
-
-              <button
-                className="button button-primary"
-                onClick={() => setAbaAtiva("novo-chamado")}
-              >
-                + Novo Chamado
-              </button>
-            </header>
-
-            <div className="content">
-              <div className="welcome-row">
-                <div>
-                  <h1>
-                    Todos os <span>Chamados</span>
-                  </h1>
-                  <p>Acompanhe e gerencie as solicitações ativas no sistema.</p>
-                </div>
-              </div>
-
-              <div className="panel" style={{ padding: "0 0 20px 0" }}>
-                {/* BARRA DE FILTROS DINÂMICOS */}
-                <div
-                  style={{
-                    display: "flex",
-                    gap: "10px",
-                    background: "#f8f9fa",
-                    padding: "15px 20px",
-                    borderBottom: "1px solid #e6e9ed",
-                  }}
-                >
-                  <select
-                    value={filtroStatus}
-                    onChange={(e) => setFiltroStatus(e.target.value)}
-                    style={{ padding: "7px 10px", fontSize: "12px" }}
-                  >
-                    <option value="">Status (Todos)</option>
-                    <option value="Aberto">Aberto</option>
-                    <option value="Em Andamento">Em Andamento</option>
-                    <option value="Resolvido">Resolvido</option>
-                    <option value="Fechado">Fechado</option>
-                  </select>
-
-                  <select
-                    value={filtroPrioridade}
-                    onChange={(e) => setFiltroPrioridade(e.target.value)}
-                    style={{ padding: "7px 10px", fontSize: "12px" }}
-                  >
-                    <option value="">Prioridade (Todas)</option>
-                    <option value="Alta">Alta</option>
-                    <option value="Média">Média</option>
-                    <option value="Baixa">Baixa</option>
-                  </select>
-
-                  {(filtroStatus || filtroPrioridade) && (
-                    <button
-                      className="button"
-                      onClick={() => {
-                        setFiltroStatus("");
-                        setFiltroPrioridade("");
-                      }}
-                      style={{
-                        fontSize: "11px",
-                        background: "#e0e5e9",
-                        minHeight: "auto",
-                      }}
-                    >
-                      Limpar Filtros
-                    </button>
-                  )}
-                </div>
-
-                <div className="table-wrap">
-                  {carregando ? (
-                    <p style={{ padding: "20px" }}>Sincronizando dados...</p>
-                  ) : chamadosFiltrados.length === 0 ? (
-                    <p style={{ padding: "20px" }}>
-                      Nenhum chamado encontrado com os filtros selecionados.
-                    </p>
-                  ) : (
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>ID</th>
-                          <th>TÍTULO / DESCRIÇÃO</th>
-                          <th>TIPO</th>
-                          <th>PRIORIDADE</th>
-                          <th>STATUS</th>
-                          <th>AÇÕES</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {chamadosFiltrados.map((chamado) => (
-                          <tr key={chamado.id}>
-                            <td className="ticket-id">#{chamado.id}</td>
-                            <td>
-                              <div className="problem-cell">
-                                <strong>{chamado.titulo}</strong>
-                                <small>{chamado.descricao}</small>
-                              </div>
-                            </td>
-                            <td>{chamado.tipo}</td>
-                            <td>
-                              <span
-                                className={`badge priority-${chamado.prioridade?.toLowerCase()}`}
-                                style={
-                                  chamado.prioridade?.toLowerCase() === "alta"
-                                    ? {
-                                        border:
-                                          "1px dashed var(--cor-vermelho)",
-                                        animation: "pulse 1.5s infinite",
-                                      }
-                                    : {}
-                                }
-                              >
-                                {chamado.prioridade} ⚡
-                              </span>
-                            </td>
-                            <td>
-                              <span
-                                className={`badge status-${chamado.status?.toLowerCase().replace(" ", "-")}`}
-                              >
-                                {chamado.status}
-                              </span>
-                            </td>
-                            <td>
-                              <button
-                                className="button"
-                                style={{
-                                  fontSize: "9px",
-                                  padding: "5px 10px",
-                                  minHeight: "auto",
-                                  background: "#e0e5e9",
-                                }}
-                                onClick={() => {
-                                  setChamadoSelecionado(chamado);
-                                  setAbaAtiva("detalhes-chamado");
-                                }}
-                              >
-                                Ver Detalhes
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                </div>
-              </div>
-            </div>
-          </>
-        )}
-
-        {/* ABA: NOVO CHAMADO */}
-        {abaAtiva === "novo-chamado" && (
-          <>
-            <header className="topbar">
-              <div>
-                <span className="topbar-kicker">ATENDIMENTO</span>
-                <strong>Abertura de Chamado</strong>
-              </div>
-              <button
-                className="button"
-                onClick={() => setAbaAtiva("chamados")}
-              >
-                ← Voltar para a Lista
-              </button>
-            </header>
-
-            <div className="content">
-              <div
-                className="panel"
-                style={{ padding: "30px", maxWidth: "600px", margin: "0 auto" }}
-              >
-                <h2 style={{ marginBottom: "5px" }}>Detalhes da Solicitação</h2>
-                <p
-                  style={{
-                    color: "#7d8995",
-                    fontSize: "12px",
-                    marginBottom: "20px",
-                  }}
-                >
-                  Preencha os dados abaixo. O sistema validará as regras de
-                  negócio automaticamente.
-                </p>
-
-                <form
-                  onSubmit={async (e) => {
-                    e.preventDefault();
-                    const formData = new FormData(e.target);
-                    const novoChamado = Object.fromEntries(formData.entries());
-
-                    try {
-                      await api.post("/tickets", novoChamado);
-                      alert("Chamado aberto com sucesso!");
-                      setAbaAtiva("chamados");
-                    } catch (erro) {
-                      const mensagemErro =
-                        erro.response?.data?.message ||
-                        "Erro ao conectar com o servidor.";
-                      alert("Erro do Servidor: " + mensagemErro);
-                    }
-                  }}
-                  style={{ display: "grid", gap: "15px" }}
-                >
-                  <div>
-                    <label
-                      style={{
-                        display: "block",
-                        fontSize: "11px",
-                        fontWeight: "700",
-                        marginBottom: "5px",
-                      }}
-                    >
-                      TÍTULO DO PROBLEMA
-                    </label>
-                    <input
-                      name="titulo"
-                      type="text"
-                      placeholder="Ex: Computador não liga"
-                      required
-                      style={{ width: "100%" }}
-                    />
-                  </div>
-
-                  <div>
-                    <label
-                      style={{
-                        display: "block",
-                        fontSize: "11px",
-                        fontWeight: "700",
-                        marginBottom: "5px",
-                      }}
-                    >
-                      DESCRIÇÃO DETALHADA
-                    </label>
-                    <textarea
-                      name="descricao"
-                      rows="4"
-                      placeholder="Descreva o que está acontecendo..."
-                      required
-                      style={{ width: "100%", resize: "vertical" }}
-                    ></textarea>
-                  </div>
-
-                  <div
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "1fr 1fr",
-                      gap: "15px",
-                    }}
-                  >
-                    <div>
-                      <label
-                        style={{
-                          display: "block",
-                          fontSize: "11px",
-                          fontWeight: "700",
-                          marginBottom: "5px",
-                        }}
-                      >
-                        TIPO
-                      </label>
-                      <select name="tipo" required style={{ width: "100%" }}>
-                        <option value="">Selecione...</option>
-                        <option value="Incidente">
-                          Incidente (Falha/Erro)
-                        </option>
-                        <option value="Requisição">
-                          Requisição (Instalação/Dúvida)
-                        </option>
-                      </select>
-                    </div>
-
-                    <div>
-                      <label
-                        style={{
-                          display: "block",
-                          fontSize: "11px",
-                          fontWeight: "700",
-                          marginBottom: "5px",
-                        }}
-                      >
-                        PRIORIDADE
-                      </label>
-                      <select
-                        name="prioridade"
-                        required
-                        style={{ width: "100%" }}
-                      >
-                        <option value="">Selecione...</option>
-                        <option value="Baixa">Baixa</option>
-                        <option value="Média">Média</option>
-                        <option value="Alta">Alta</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  <button
-                    type="submit"
-                    className="button button-primary"
-                    style={{ width: "100%", marginTop: "10px" }}
-                  >
-                    Enviar Solicitação
-                  </button>
-                </form>
-              </div>
-            </div>
-          </>
-        )}
-
-        {/* ABA: MÓDULO DE GESTÃO DE EQUIPAMENTOS / ITAM (PASSO 4) */}
-        {abaAtiva === "equipamentos" && (
-          <>
-            <header className="topbar">
-              <div>
-                <span className="topbar-kicker">INVENTÁRIO</span>
-                <strong>Equipamentos da FATEC</strong>
-              </div>
-            </header>
-            <div className="content">
-              <div className="welcome-row">
-                <div>
-                  <h1>
-                    Gestão de <span>Ativos (ITAM)</span>
-                  </h1>
-                  <p>
-                    Controle de inventário dos computadores e laboratórios da
-                    instituição.
-                  </p>
-                </div>
-              </div>
-
-              {/* Formulário simples de cadastro de Ativo */}
-              <div
-                className="panel"
-                style={{ padding: "20px", marginBottom: "20px" }}
-              >
-                <h3 style={{ fontSize: "14px", marginBottom: "15px" }}>
-                  Cadastrar Novo Equipamento
-                </h3>
-                <form
-                  onSubmit={async (e) => {
-                    e.preventDefault();
-                    try {
-                      const novoAtivo = { patrimonio, laboratorio };
-                      await api.post("/equipment", novoAtivo);
-                      alert("Equipamento cadastrado com sucesso!");
-                      setEquipamentos([...equipamentos, novoAtivo]);
-                      setPatrimonio("");
-                      setLaboratorio("");
-                    } catch (err) {
-                      // Fallback visual local caso a API não tenha o endpoint ativo no Render ainda
-                      const novoAtivoLocal = {
-                        id: Date.now(),
-                        patrimonio,
-                        laboratorio,
-                      };
-                      setEquipamentos([...equipamentos, novoAtivoLocal]);
-                      alert("Equipamento adicionado ao inventário local!");
-                      setPatrimonio("");
-                      setLaboratorio("");
-                    }
-                  }}
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "1fr 1fr auto",
-                    gap: "15px",
-                    alignItems: "end",
-                  }}
-                >
-                  <div>
-                    <label
-                      style={{
-                        display: "block",
-                        fontSize: "11px",
-                        fontWeight: "700",
-                        marginBottom: "5px",
-                      }}
-                    >
-                      NÚMERO DE PATRIMÔNIO
-                    </label>
-                    <input
-                      type="text"
-                      value={patrimonio}
-                      onChange={(e) => setPatrimonio(e.target.value)}
-                      placeholder="Ex: PAT-2026-99"
-                      required
-                      style={{ width: "100%" }}
-                    />
-                  </div>
-                  <div>
-                    <label
-                      style={{
-                        display: "block",
-                        fontSize: "11px",
-                        fontWeight: "700",
-                        marginBottom: "5px",
-                      }}
-                    >
-                      LOCAL / LABORATÓRIO
-                    </label>
-                    <input
-                      type="text"
-                      value={laboratorio}
-                      onChange={(e) => setLaboratorio(e.target.value)}
-                      placeholder="Ex: Lab 05"
-                      required
-                      style={{ width: "100%" }}
-                    />
-                  </div>
-                  <button type="submit" className="button button-primary">
-                    Cadastrar Ativo
-                  </button>
-                </form>
-              </div>
-
-              {/* Tabela de Equipamentos */}
-              <div
-                className="panel table-panel"
-                style={{ padding: "0 0 20px 0" }}
-              >
-                <div className="table-wrap">
-                  {equipamentos.length === 0 ? (
-                    <p style={{ padding: "20px" }}>
-                      Nenhum equipamento cadastrado no inventário.
-                    </p>
-                  ) : (
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>PATRIMÔNIO</th>
-                          <th>LOCAL / LABORATÓRIO</th>
-                          <th>STATUS</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {equipamentos.map((eq, idx) => (
-                          <tr key={eq.id || idx}>
-                            <td>
-                              <strong>{eq.patrimonio}</strong>
-                            </td>
-                            <td>{eq.laboratorio}</td>
-                            <td>
-                              <span className="badge status-aberto">Ativo</span>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                </div>
-              </div>
-            </div>
-          </>
-        )}
-
-        {/* ABA: DETALHES / ATENDIMENTO DO CHAMADO */}
-        {abaAtiva === "detalhes-chamado" && (
-          <>
-            <header className="topbar">
-              <div>
-                <span className="topbar-kicker">ATENDIMENTO TÉCNICO</span>
-                <strong>Chamado #{chamadoSelecionado?.id}</strong>
-              </div>
-              <button
-                className="button"
-                onClick={() => setAbaAtiva("chamados")}
-              >
-                ← Voltar para a Lista
-              </button>
-            </header>
-
-            <div className="content">
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "2fr 1fr",
-                  gap: "20px",
-                }}
-              >
-                <div className="panel" style={{ padding: "25px" }}>
-                  <p className="eyebrow">DETALHES DA SOLICITAÇÃO</p>
-                  <h2 style={{ marginBottom: "10px" }}>
-                    {chamadoSelecionado?.titulo}
-                  </h2>
-                  <p
-                    style={{
-                      color: "#536170",
-                      fontSize: "12px",
-                      lineHeight: "1.6",
-                      marginBottom: "25px",
-                    }}
-                  >
-                    {chamadoSelecionado?.descricao}
-                  </p>
-
-                  <hr
-                    style={{
-                      border: "0",
-                      borderTop: "1px solid #e6e9ed",
-                      margin: "20px 0",
-                    }}
-                  />
-
-                  <h3 style={{ fontSize: "14px", marginBottom: "15px" }}>
-                    Ações de Atendimento
-                  </h3>
-
-                  <form
-                    onSubmit={async (e) => {
-                      e.preventDefault();
-                      const formData = new FormData(e.target);
-                      const dadosAtualizacao = Object.fromEntries(
-                        formData.entries(),
-                      );
-
-                      try {
-                        await api.put(
-                          `/tickets/${chamadoSelecionado.id}`,
-                          dadosAtualizacao,
-                        );
-                        alert("Atribuição e alterações salvas com sucesso!");
-                        setAbaAtiva("chamados");
-                      } catch (erro) {
-                        const mensagemErro =
-                          erro.response?.data?.message ||
-                          "Erro ao atualizar o chamado no servidor.";
-                        alert("Erro do Servidor: " + mensagemErro);
-                      }
-                    }}
-                    style={{ display: "grid", gap: "15px" }}
-                  >
-                    <div>
-                      <label
-                        style={{
-                          display: "block",
-                          fontSize: "11px",
-                          fontWeight: "700",
-                          marginBottom: "5px",
-                        }}
-                      >
-                        TÉCNICO RESPONSÁVEL (ASSIGNEE)
-                      </label>
-                      <input
-                        name="tecnicoResponsavel"
-                        type="text"
-                        defaultValue={
-                          chamadoSelecionado?.tecnicoResponsavel || ""
-                        }
-                        placeholder="Nome ou ID do técnico"
-                        style={{ width: "100%" }}
-                      />
-                    </div>
-
-                    <div>
-                      <label
-                        style={{
-                          display: "block",
-                          fontSize: "11px",
-                          fontWeight: "700",
-                          marginBottom: "5px",
-                        }}
-                      >
-                        ALTERAR STATUS
-                      </label>
-                      <select
-                        name="status"
-                        defaultValue={chamadoSelecionado?.status}
-                        style={{ width: "100%" }}
-                      >
-                        <option value="Aberto">Aberto</option>
-                        <option value="Em Andamento">Em Andamento</option>
-                        <option value="Resolvido">Resolvido</option>
-                        <option value="Fechado">Fechado</option>
-                      </select>
-                    </div>
-
-                    <div>
-                      <label
-                        style={{
-                          display: "block",
-                          fontSize: "11px",
-                          fontWeight: "700",
-                          marginBottom: "5px",
-                        }}
-                      >
-                        PROBLEMA CONSTATADO
-                      </label>
-                      <input
-                        name="problemaConstatado"
-                        type="text"
-                        defaultValue={
-                          chamadoSelecionado?.problemaConstatado || ""
-                        }
-                        placeholder="Ex: Cabo de rede desconectado / Fonte queimada"
-                        style={{ width: "100%" }}
-                      />
-                    </div>
-
-                    <div>
-                      <label
-                        style={{
-                          display: "block",
-                          fontSize: "11px",
-                          fontWeight: "700",
-                          marginBottom: "5px",
-                        }}
-                      >
-                        REGISTRO DE SOLUÇÃO
-                      </label>
-                      <textarea
-                        name="solucao"
-                        rows="3"
-                        defaultValue={chamadoSelecionado?.solucao || ""}
-                        placeholder="Descreva o procedimento executado para resolver o problema..."
-                        style={{ width: "100%", resize: "vertical" }}
-                      ></textarea>
-                    </div>
-
-                    <button
-                      type="submit"
-                      className="button button-primary"
-                      style={{ marginTop: "10px" }}
-                    >
-                      Salvar Alterações
-                    </button>
-                  </form>
-                </div>
-
-                {/* COLUNA DIREITA: METADADOS / RESUMO */}
-                <div
-                  style={{
-                    display: "grid",
-                    gap: "15px",
-                    alignContent: "start",
-                  }}
-                >
-                  <div className="panel" style={{ padding: "20px" }}>
-                    <p className="eyebrow" style={{ marginBottom: "10px" }}>
-                      INFORMAÇÕES
-                    </p>
-
-                    <div
-                      style={{ display: "grid", gap: "12px", fontSize: "11px" }}
-                    >
-                      <div>
-                        <span style={{ color: "#8995a0", display: "block" }}>
-                          Tipo
-                        </span>
-                        <strong>{chamadoSelecionado?.tipo}</strong>
-                      </div>
-                      <div>
-                        <span style={{ color: "#8995a0", display: "block" }}>
-                          Prioridade
-                        </span>
-                        <span
-                          className={`badge priority-${chamadoSelecionado?.prioridade?.toLowerCase()}`}
-                        >
-                          {chamadoSelecionado?.prioridade}
-                        </span>
-                      </div>
-                      <div>
-                        <span style={{ color: "#8995a0", display: "block" }}>
-                          Status Atual
-                        </span>
-                        <span
-                          className={`badge status-${chamadoSelecionado?.status?.toLowerCase().replace(" ", "-")}`}
-                        >
-                          {chamadoSelecionado?.status}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-            {abaAtiva === "equipamentos" && (
-              <>
-                <header className="topbar">
-                  <div>
-                    <span className="topbar-kicker">INVENTÁRIO</span>
-                    <strong>Equipamentos da FATEC</strong>
-                  </div>
-                </header>
-                <div className="content">
-                  <div className="welcome-row">
-                    <div>
-                      <h1>
-                        Gestão de <span>Ativos (ITAM)</span>
-                      </h1>
-                      <p>
-                        Equipamentos sincronizados diretamente do banco de
-                        dados.
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Formulário de Cadastro de Equipamento conectado à API /equipment */}
-                  <div
-                    className="panel"
-                    style={{ padding: "20px", marginBottom: "20px" }}
-                  >
-                    <h3 style={{ fontSize: "14px", marginBottom: "15px" }}>
-                      Cadastrar Novo Equipamento
-                    </h3>
-                    <form
-                      onSubmit={async (e) => {
-                        e.preventDefault();
-                        const formData = new FormData(e.target);
-                        const novoEquipamento = {
-                          nome: formData.get("nome"),
-                          descricao: formData.get("descricao"),
-                          id_local: Number(formData.get("id_local")),
-                        };
-
-                        try {
-                          await api.post("/equipment", novoEquipamento);
-                          alert(
-                            "Equipamento cadastrado com sucesso no banco de dados!",
-                          );
-
-                          // Recarrega a lista da API
-                          const resposta = await api.get("/equipment");
-                          setEquipamentos(resposta.data.data || []);
-                          e.target.reset();
-                        } catch (err) {
-                          const mensagemErro =
-                            err.response?.data?.message ||
-                            "Erro ao cadastrar equipamento.";
-                          alert("Erro: " + mensagemErro);
-                        }
-                      }}
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns: "1fr 1fr 1fr auto",
-                        gap: "15px",
-                        alignItems: "end",
-                      }}
-                    >
-                      <div>
-                        <label
-                          style={{
-                            display: "block",
-                            fontSize: "11px",
-                            fontWeight: "700",
-                            marginBottom: "5px",
-                          }}
-                        >
-                          NOME / PATRIMÔNIO
-                        </label>
-                        <input
-                          name="nome"
-                          type="text"
-                          placeholder="Ex: Computador Dell OptiPlex"
-                          required
-                          style={{ width: "100%" }}
-                        />
-                      </div>
-                      <div>
-                        <label
-                          style={{
-                            display: "block",
-                            fontSize: "11px",
-                            fontWeight: "700",
-                            marginBottom: "5px",
-                          }}
-                        >
-                          DESCRIÇÃO
-                        </label>
-                        <input
-                          name="descricao"
-                          type="text"
-                          placeholder="Ex: Laboratório 01"
-                          style={{ width: "100%" }}
-                        />
-                      </div>
-                      <div>
-                        <label
-                          style={{
-                            display: "block",
-                            fontSize: "11px",
-                            fontWeight: "700",
-                            marginBottom: "5px",
-                          }}
-                        >
-                          ID DO LOCAL
-                        </label>
-                        <input
-                          name="id_local"
-                          type="number"
-                          min="1"
-                          placeholder="Ex: 1"
-                          required
-                          style={{ width: "100%" }}
-                        />
-                      </div>
-                      <button type="submit" className="button button-primary">
-                        Salvar no Banco
-                      </button>
-                    </form>
-                  </div>
-
-                  {/* Tabela puxando os dados reais do banco */}
-                  <div
-                    className="panel table-panel"
-                    style={{ padding: "0 0 20px 0" }}
-                  >
-                    <div className="table-wrap">
-                      {equipamentos.length === 0 ? (
-                        <p style={{ padding: "20px" }}>
-                          Nenhum equipamento cadastrado no banco de dados.
-                        </p>
-                      ) : (
-                        <table>
-                          <thead>
-                            <tr>
-                              <th>ID</th>
-                              <th>NOME / EQUIPAMENTO</th>
-                              <th>DESCRIÇÃO</th>
-                              <th>LOCAL (ID)</th>
-                              <th>STATUS</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {equipamentos.map((eq) => (
-                              <tr key={eq.id}>
-                                <td className="ticket-id">#{eq.id}</td>
-                                <td>
-                                  <strong>{eq.nome}</strong>
-                                </td>
-                                <td>{eq.descricao || "Sem descrição"}</td>
-                                <td>Local #{eq.id_local}</td>
-                                <td>
-                                  <span
-                                    className={`badge ${eq.ativo ? "status-aberto" : "status-fechado"}`}
-                                  >
-                                    {eq.ativo ? "Ativo" : "Inativo"}
-                                  </span>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </>
-            )}
-          </>
-        )}
+          {screen === "overview" && <OverviewPage name={name} role={role} tickets={tickets} pagination={ticketPagination} loading={loadingTickets} onOpen={openTicket} onShowAll={() => setScreen("tickets")} onNewTicket={openNewTicket} />}
+          {screen === "tickets" && <TicketsPage
+            role={role}
+            tickets={tickets}
+            loading={loadingTickets}
+            titleSearch={titleInput}
+            status={statusFilter}
+            priority={priorityFilter}
+            pagination={ticketPagination}
+            onTitleSearch={(value) => { setTitleInput(value); setTicketPage(1); }}
+            onStatus={(value) => { setStatusFilter(value); setTicketPage(1); }}
+            onPriority={(value) => { setPriorityFilter(value); setTicketPage(1); }}
+            onPage={setTicketPage}
+            onOpen={openTicket}
+          />}
+          {screen === "new-ticket" && <NewTicketPage
+            role={role}
+            locals={locals}
+            equipment={equipmentOptions}
+            catalogLoading={loadingCatalog}
+            catalogError={catalogError}
+            submitting={submitting}
+            onNeedCatalog={loadCatalog}
+            onSubmit={createTicket}
+            onCancel={() => setScreen("tickets")}
+          />}
+          {screen === "ticket-detail" && <TicketDetailsPage
+            ticket={selectedTicket}
+            role={role}
+            userId={user.id}
+            comments={comments}
+            loading={loadingDetail}
+            loadingComments={loadingComments}
+            submitting={submitting}
+            onBack={() => setScreen("tickets")}
+            onUpdate={updateTicket}
+            onComment={addComment}
+            onCancel={cancelTicket}
+          />}
+          {screen === "equipment" && role === "Admin" && <EquipmentPage
+            equipment={equipmentList}
+            locals={locals}
+            loading={loadingEquipment}
+            pagination={equipmentPagination}
+            editingId={editingEquipmentId}
+            form={equipmentForm}
+            submitting={submitting}
+            onRefresh={refreshEquipment}
+            onEdit={editEquipment}
+            onCancelEdit={clearEquipmentForm}
+            onFormChange={updateEquipmentForm}
+            onSave={saveEquipment}
+            onDeactivate={deactivateEquipment}
+            onPage={setEquipmentPage}
+          />}
+        </div>
       </main>
     </div>
   );

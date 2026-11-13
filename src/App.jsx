@@ -1,18 +1,24 @@
 import React from "react";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
+
+function RotaProtegida() {
+  return localStorage.getItem("accessToken") ? (
+    <Dashboard />
+  ) : (
+    <Navigate to="/login" replace />
+  );
+}
 
 export default function App() {
   return (
     <BrowserRouter>
       <Routes>
-        {/* Tela inicial e rota /login abrem o Login */}
-        <Route path="/" element={<Login />} />
+        <Route path="/" element={<Navigate to="/login" replace />} />
         <Route path="/login" element={<Login />} />
-
-        {/* Rota que abre o painel após fazer o login */}
-        <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/dashboard" element={<RotaProtegida />} />
+        <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
     </BrowserRouter>
   );
