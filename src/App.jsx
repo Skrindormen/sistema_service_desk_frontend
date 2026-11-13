@@ -7,11 +7,12 @@ export default function App() {
   return (
     <BrowserRouter>
       <Routes>
-        {/* Agora a tela inicial vai direto para o Dashboard */}
-        <Route path="/" element={<Dashboard />} />
-
-        {/* Deixamos o login guardado nesta rota para usar depois */}
+        {/* Tela inicial e rota /login abrem o Login */}
+        <Route path="/" element={<Login />} />
         <Route path="/login" element={<Login />} />
+
+        {/* Rota que abre o painel após fazer o login */}
+        <Route path="/dashboard" element={<Dashboard />} />
       </Routes>
     </BrowserRouter>
   );

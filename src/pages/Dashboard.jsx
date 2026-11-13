@@ -852,6 +852,179 @@ export default function Dashboard() {
                 </div>
               </div>
             </div>
+            {abaAtiva === "equipamentos" && (
+              <>
+                <header className="topbar">
+                  <div>
+                    <span className="topbar-kicker">INVENTÁRIO</span>
+                    <strong>Equipamentos da FATEC</strong>
+                  </div>
+                </header>
+                <div className="content">
+                  <div className="welcome-row">
+                    <div>
+                      <h1>
+                        Gestão de <span>Ativos (ITAM)</span>
+                      </h1>
+                      <p>
+                        Equipamentos sincronizados diretamente do banco de
+                        dados.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Formulário de Cadastro de Equipamento conectado à API /equipment */}
+                  <div
+                    className="panel"
+                    style={{ padding: "20px", marginBottom: "20px" }}
+                  >
+                    <h3 style={{ fontSize: "14px", marginBottom: "15px" }}>
+                      Cadastrar Novo Equipamento
+                    </h3>
+                    <form
+                      onSubmit={async (e) => {
+                        e.preventDefault();
+                        const formData = new FormData(e.target);
+                        const novoEquipamento = {
+                          nome: formData.get("nome"),
+                          descricao: formData.get("descricao"),
+                          id_local: Number(formData.get("id_local")),
+                        };
+
+                        try {
+                          await api.post("/equipment", novoEquipamento);
+                          alert(
+                            "Equipamento cadastrado com sucesso no banco de dados!",
+                          );
+
+                          // Recarrega a lista da API
+                          const resposta = await api.get("/equipment");
+                          setEquipamentos(resposta.data.data || []);
+                          e.target.reset();
+                        } catch (err) {
+                          const mensagemErro =
+                            err.response?.data?.message ||
+                            "Erro ao cadastrar equipamento.";
+                          alert("Erro: " + mensagemErro);
+                        }
+                      }}
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "1fr 1fr 1fr auto",
+                        gap: "15px",
+                        alignItems: "end",
+                      }}
+                    >
+                      <div>
+                        <label
+                          style={{
+                            display: "block",
+                            fontSize: "11px",
+                            fontWeight: "700",
+                            marginBottom: "5px",
+                          }}
+                        >
+                          NOME / PATRIMÔNIO
+                        </label>
+                        <input
+                          name="nome"
+                          type="text"
+                          placeholder="Ex: Computador Dell OptiPlex"
+                          required
+                          style={{ width: "100%" }}
+                        />
+                      </div>
+                      <div>
+                        <label
+                          style={{
+                            display: "block",
+                            fontSize: "11px",
+                            fontWeight: "700",
+                            marginBottom: "5px",
+                          }}
+                        >
+                          DESCRIÇÃO
+                        </label>
+                        <input
+                          name="descricao"
+                          type="text"
+                          placeholder="Ex: Laboratório 01"
+                          style={{ width: "100%" }}
+                        />
+                      </div>
+                      <div>
+                        <label
+                          style={{
+                            display: "block",
+                            fontSize: "11px",
+                            fontWeight: "700",
+                            marginBottom: "5px",
+                          }}
+                        >
+                          ID DO LOCAL
+                        </label>
+                        <input
+                          name="id_local"
+                          type="number"
+                          min="1"
+                          placeholder="Ex: 1"
+                          required
+                          style={{ width: "100%" }}
+                        />
+                      </div>
+                      <button type="submit" className="button button-primary">
+                        Salvar no Banco
+                      </button>
+                    </form>
+                  </div>
+
+                  {/* Tabela puxando os dados reais do banco */}
+                  <div
+                    className="panel table-panel"
+                    style={{ padding: "0 0 20px 0" }}
+                  >
+                    <div className="table-wrap">
+                      {equipamentos.length === 0 ? (
+                        <p style={{ padding: "20px" }}>
+                          Nenhum equipamento cadastrado no banco de dados.
+                        </p>
+                      ) : (
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>ID</th>
+                              <th>NOME / EQUIPAMENTO</th>
+                              <th>DESCRIÇÃO</th>
+                              <th>LOCAL (ID)</th>
+                              <th>STATUS</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {equipamentos.map((eq) => (
+                              <tr key={eq.id}>
+                                <td className="ticket-id">#{eq.id}</td>
+                                <td>
+                                  <strong>{eq.nome}</strong>
+                                </td>
+                                <td>{eq.descricao || "Sem descrição"}</td>
+                                <td>Local #{eq.id_local}</td>
+                                <td>
+                                  <span
+                                    className={`badge ${eq.ativo ? "status-aberto" : "status-fechado"}`}
+                                  >
+                                    {eq.ativo ? "Ativo" : "Inativo"}
+                                  </span>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
           </>
         )}
       </main>
