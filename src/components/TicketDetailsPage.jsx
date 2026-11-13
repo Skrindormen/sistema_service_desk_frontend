@@ -1,4 +1,3 @@
-import React from "react";
 import {
   nomePerfil,
   podeCancelarChamado,
@@ -15,8 +14,9 @@ export default function TicketDetailsPage({
   onBack, onUpdate, onComment, onCancel,
 }) {
   if (!ticket) return null;
+  const isClosed = ["fechado", "cancelado"].includes((ticket.status || "").toLowerCase());
   const canManage = podeGerenciarChamado(role, ticket) &&
-    !["Fechado", "Cancelado"].includes(ticket.status);
+    !isClosed;
   const canCancel = podeCancelarChamado(role, ticket, userId);
   const canComment = podeComentarChamado(ticket);
 

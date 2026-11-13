@@ -1,7 +1,7 @@
 import api from "./api";
 
-export async function listEquipment({ page = 1, limit = 10 } = {}) {
-  const response = await api.get("/equipment", { params: { page, limit } });
+export async function listEquipment({ page = 1, limit = 10, signal } = {}) {
+  const response = await api.get("/equipment", { params: { page, limit }, signal });
   const body = response.data || {};
   return {
     items: Array.isArray(body.data) ? body.data : [],
@@ -20,13 +20,13 @@ export function updateEquipment(id, payload) {
 export function deactivateEquipment(id) {
   return api.delete("/equipment/" + id);
 }
-export async function listAllEquipment({ limit = 100 } = {}) {
-  const firstPage = await listEquipment({ page: 1, limit });
+export async function listAllEquipment({ limit = 100, signal } = {}) {
+  const firstPage = await listEquipment({ page: 1, limit, signal });
   const items = [...firstPage.items];
   const totalPages = Math.max(1, Number(firstPage.pagination.totalPages || 1));
 
   for (let page = 2; page <= totalPages; page += 1) {
-    const result = await listEquipment({ page, limit });
+    const result = await listEquipment({ page, limit, signal });
     items.push(...result.items);
   }
 

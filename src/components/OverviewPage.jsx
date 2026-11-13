@@ -1,8 +1,7 @@
-import React from "react";
 import TicketTable from "./TicketTable";
 
 export default function OverviewPage({
-  name, role, tickets, pagination, loading, onOpen, onShowAll, onNewTicket,
+  name, role, tickets, pagination, loading, onOpen, onShowAll, requesterNames,
 }) {
   const inProgress = tickets.filter((ticket) => ticket.status === "Em andamento").length;
   const open = tickets.filter((ticket) => ticket.status === "Aberto").length;
@@ -17,7 +16,6 @@ export default function OverviewPage({
             ? "Acompanhe suas solicitações e abra um chamado quando precisar."
             : "Acompanhe os chamados disponibilizados para o seu perfil."}</p>
         </div>
-        <button className="button button-primary" type="button" onClick={onNewTicket}>Abrir chamado</button>
       </section>
 
       <section className="stats-grid" aria-label="Resumo de chamados">
@@ -50,6 +48,7 @@ export default function OverviewPage({
           tickets={tickets}
           loading={loading}
           onOpen={onOpen}
+          requesterNames={requesterNames}
           emptyMessage="Nenhum chamado disponível para este perfil."
         />
       </section>

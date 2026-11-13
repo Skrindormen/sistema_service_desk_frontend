@@ -1,10 +1,12 @@
-import React from "react";
 import PaginationControls from "./PaginationControls";
+import { frontendLabName } from "../utils/labLocations";
 
 export default function EquipmentPage({
   equipment, locals, loading, pagination, editingId, form, submitting,
   onRefresh, onEdit, onCancelEdit, onFormChange, onSave, onDeactivate, onPage,
 }) {
+  const busy = submitting;
+
   return (
     <>
       <section className="welcome-row">
@@ -14,12 +16,12 @@ export default function EquipmentPage({
       <section className="panel detail-card equipment-form-card">
         <div className="panel-heading"><div><p className="eyebrow">{editingId ? "EDIÇÃO" : "NOVO ATIVO"}</p><h2>{editingId ? "Editar equipamento" : "Cadastrar equipamento"}</h2></div></div>
         <form className="equipment-form" onSubmit={onSave}>
-          <label className="field"><span>Nome</span><input name="nome" value={form.nome} onChange={onFormChange} maxLength="100" required /></label>
-          <label className="field"><span>Descrição</span><input name="descricao" value={form.descricao} onChange={onFormChange} maxLength="255" /></label>
-          <label className="field"><span>Local</span><select name="id_local" value={form.id_local} onChange={onFormChange} required><option value="">Selecione um local</option>{locals.map((local) => <option key={local.id} value={local.id}>{local.nome}</option>)}</select></label>
+          <label className="field"><span>Nome</span><input name="nome" value={form.nome} onChange={onFormChange} maxLength="100" required disabled={busy} /></label>
+          <label className="field"><span>Descrição</span><input name="descricao" value={form.descricao} onChange={onFormChange} maxLength="255" disabled={busy} /></label>
+          <label className="field"><span>Local</span><select name="id_local" value={form.id_local} onChange={onFormChange} required disabled={busy}><option value="">Selecione um local</option>{locals.map((local) => <option key={local.id} value={local.id}>{frontendLabName(local)}</option>)}</select></label>
           <div className="equipment-form-actions">
-            {editingId && <button className="button button-muted" type="button" onClick={onCancelEdit}>Descartar</button>}
-            <button className="button button-primary" type="submit" disabled={submitting}>{submitting ? "Salvando..." : editingId ? "Salvar edição" : "Cadastrar"}</button>
+            {editingId && <button className="button button-muted" type="button" onClick={onCancelEdit} disabled={busy}>Descartar</button>}
+            <button className="button button-primary" type="submit" disabled={busy}>{submitting ? "Salvando..." : editingId ? "Salvar edição" : "Cadastrar"}</button>
           </div>
         </form>
       </section>
@@ -34,8 +36,8 @@ export default function EquipmentPage({
                 <tr key={item.id}>
                   <td><strong>{item.nome}</strong></td>
                   <td>{item.descricao || "—"}</td>
-                  <td>{locals.find((local) => String(local.id) === String(item.id_local))?.nome || "Local #" + item.id_local}</td>
-                  <td className="table-actions"><button className="button button-muted button-small" type="button" onClick={() => onEdit(item)}>Editar</button><button className="button button-danger button-small" type="button" onClick={() => onDeactivate(item)} disabled={submitting}>Desativar</button></td>
+                  <td>{frontendLabName(locals.find((local) => String(local.id) === String(item.id_local)) || { nome: "Local #" + item.id_local })}</td>
+                  <td className="table-actions"><button className="button button-muted button-small" type="button" onClick={() => onEdit(item)} disabled={busy}>Editar</button><button className="button button-danger button-small" type="button" onClick={() => onDeactivate(item)} disabled={busy}>Desativar</button></td>
                 </tr>
               ))}</tbody>
             </table>

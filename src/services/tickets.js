@@ -1,4 +1,4 @@
-import api from "./api";
+import api from "./api.js";
 
 function unpackList(response) {
   const body = response.data || {};
@@ -17,6 +17,19 @@ export async function listTickets({ page = 1, limit = 10, ...filters }, signal) 
   });
   const response = await api.get("/tickets", { params, signal });
   return unpackList(response);
+}
+
+export async function listAllTickets(filters = {}, signal, limit = 100) {
+  const firstPage = await listTickets({ ...filters, page: 1, limit }, signal);
+  const items = [...firstPage.items];
+  const totalPages = Math.max(1, Number(firstPage.pagination.totalPages || 1));
+
+  for (let page = 2; page <= totalPages; page += 1) {
+    const result = await listTickets({ ...filters, page, limit }, signal);
+    items.push(...result.items);
+  }
+
+  return items;
 }
 
 export async function getTicket(id) {

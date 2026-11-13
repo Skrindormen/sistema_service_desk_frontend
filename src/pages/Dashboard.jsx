@@ -1,21 +1,24 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  listTickets, getTicket, listTicketComments,
+  listTickets, listAllTickets, getTicket, listTicketComments,
   createTicket as postTicket, updateTicket as putTicket,
   cancelTicket as cancelTicketRequest, addTicketComment as postTicketComment,
 } from "../services/tickets";
 import {
-  listEquipment, createEquipment as postEquipment,
+  listEquipment, listAllEquipment, createEquipment as postEquipment,
   updateEquipment as putEquipment, deactivateEquipment as removeEquipment,
 } from "../services/equipment";
 import { listLocals } from "../services/locals";
+import { createUser as postUser, deleteUser as deleteUserRequest, listAllUsers } from "../services/users";
 import { nomePerfil } from "../auth/permissions";
 import OverviewPage from "../components/OverviewPage";
 import TicketsPage from "../components/TicketsPage";
 import NewTicketPage from "../components/NewTicketPage";
 import TicketDetailsPage from "../components/TicketDetailsPage";
 import EquipmentPage from "../components/EquipmentPage";
+import UserManagementPage from "../components/UserManagementPage";
+import DashboardsPage from "../components/DashboardsPage";
 
 const PAGE_SIZE = 10;
 const EMPTY_PAGINATION = { page: 1, totalPages: 1, total: 0 };
@@ -37,6 +40,16 @@ export default function Dashboard() {
   const [user] = useState(readCurrentUser);
   const role = user?.tipo;
   const name = user?.nome || "Usuário";
+  const [users, setUsers] = useState([]);
+  const [usersLoaded, setUsersLoaded] = useState(false);
+  const [usersRefresh, setUsersRefresh] = useState(0);
+  const [userBusy, setUserBusy] = useState(false);
+  const [userListError, setUserListError] = useState("");
+  const requesterNames = useMemo(() => {
+    const names = new Map(users.map((item) => [String(item.id), item.nome]));
+    if (user?.id && user.nome) names.set(String(user.id), user.nome);
+    return names;
+  }, [users, user]);
 
   const [screen, setScreen] = useState("overview");
   const [tickets, setTickets] = useState([]);
@@ -69,6 +82,13 @@ export default function Dashboard() {
   const [editingEquipmentId, setEditingEquipmentId] = useState(null);
   const [equipmentForm, setEquipmentForm] = useState({ nome: "", descricao: "", id_local: "" });
 
+  const [dashboardTickets, setDashboardTickets] = useState([]);
+  const [dashboardEquipment, setDashboardEquipment] = useState([]);
+  const [dashboardLocals, setDashboardLocals] = useState([]);
+  const [dashboardLoading, setDashboardLoading] = useState(true);
+  const [dashboardError, setDashboardError] = useState("");
+  const [dashboardRefresh, setDashboardRefresh] = useState(0);
+
 
   const detailRequestId = useRef(0);
 
@@ -80,6 +100,67 @@ export default function Dashboard() {
       navigate("/login", { replace: true });
     }
   }, [navigate, role]);
+
+  useEffect(() => {
+    if (!role || role === "Usuario") return undefined;
+    let active = true;
+    const controller = new AbortController();
+    listAllUsers({ signal: controller.signal })
+      .then((result) => {
+        if (active) {
+          setUsers(result);
+          setUserListError("");
+        }
+      })
+      .catch((error) => {
+        if (active) {
+          setUsers([]);
+          setUserListError(responseMessage(error, "Não foi possível carregar os usuários."));
+        }
+      })
+      .finally(() => {
+        if (active) setUsersLoaded(true);
+      });
+    return () => { active = false; controller.abort(); };
+  }, [role, usersRefresh]);
+
+  useEffect(() => {
+    if (screen !== "dashboards" || !role) return undefined;
+    let active = true;
+    const controller = new AbortController();
+    const ticketFilters = role === "N1" ? { nivel_atendimento: "N1" } : {};
+
+    Promise.allSettled([
+      listAllTickets(ticketFilters, controller.signal),
+      listAllEquipment({ limit: 100, signal: controller.signal }),
+      listLocals({ page: 1, limit: 100, signal: controller.signal }),
+    ]).then(([ticketsResult, equipmentResult, localsResult]) => {
+      if (!active) return;
+      const errors = [];
+      if (ticketsResult.status === "fulfilled") setDashboardTickets(ticketsResult.value);
+      else {
+        setDashboardTickets([]);
+        errors.push(responseMessage(ticketsResult.reason, "Não foi possível carregar os chamados para os dashboards."));
+      }
+      if (equipmentResult.status === "fulfilled") setDashboardEquipment(equipmentResult.value);
+      else {
+        setDashboardEquipment([]);
+        errors.push("A lista de equipamentos não está disponível; os dados por computador ficarão limitados.");
+      }
+      if (localsResult.status === "fulfilled") setDashboardLocals(localsResult.value.items);
+      else {
+        setDashboardLocals([]);
+        errors.push("A lista de laboratórios não está disponível.");
+      }
+      setDashboardError(errors.join(" "));
+      setDashboardLoading(false);
+    });
+
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [screen, role, dashboardRefresh]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -97,10 +178,9 @@ export default function Dashboard() {
     if (statusFilter) params.status = statusFilter;
     if (priorityFilter) params.prioridade = priorityFilter;
 
-    setLoadingTickets(true);
-    setPageError("");
     listTickets(params, controller.signal)
       .then((response) => {
+        setPageError("");
         setTickets(response.items);
         const info = response.pagination || {};
         setTicketPagination({
@@ -126,7 +206,7 @@ export default function Dashboard() {
     setCatalogError("");
     const [localsResult, equipmentResult] = await Promise.allSettled([
       listLocals({ page: 1, limit: 100 }),
-      listEquipment({ page: 1, limit: 100 }),
+      listAllEquipment({ limit: 100 }),
     ]);
     if (localsResult.status === "fulfilled") setLocals(localsResult.value.items);
     else {
@@ -143,13 +223,13 @@ export default function Dashboard() {
     setLoadingCatalog(false);
   }, []);
 
-  const loadEquipmentList = useCallback(async () => {
-    setLoadingEquipment(true);
-    setPageError("");
+  const loadEquipmentList = useCallback(async (signal) => {
     const [equipmentResult, localsResult] = await Promise.allSettled([
-      listEquipment({ page: equipmentPage, limit: PAGE_SIZE }),
-      listLocals({ page: 1, limit: 100 }),
+      listEquipment({ page: equipmentPage, limit: PAGE_SIZE, signal }),
+      listLocals({ page: 1, limit: 100, signal }),
     ]);
+    if (signal.aborted) return;
+    const errors = [];
     if (equipmentResult.status === "fulfilled") {
       setEquipmentList(equipmentResult.value.items);
       const info = equipmentResult.value.pagination || {};
@@ -159,20 +239,32 @@ export default function Dashboard() {
         total: Number(info.total || 0),
       });
     } else {
-      setPageError(responseMessage(equipmentResult.reason, "Não foi possível carregar o inventário."));
+      errors.push(responseMessage(equipmentResult.reason, "Não foi possível carregar o inventário."));
       setEquipmentList([]);
     }
     if (localsResult.status === "fulfilled") setLocals(localsResult.value.items);
-    else setPageError((old) => old || responseMessage(localsResult.reason, "Não foi possível carregar os locais."));
+    else errors.push(responseMessage(localsResult.reason, "Não foi possível carregar os locais."));
+    setPageError(errors.join(" "));
     setLoadingEquipment(false);
   }, [equipmentPage]);
 
   useEffect(() => {
-    if (screen === "equipment" && role === "Admin") loadEquipmentList();
+    if (screen !== "equipment" || role !== "Admin") return undefined;
+    const controller = new AbortController();
+    Promise.resolve().then(() => loadEquipmentList(controller.signal));
+    return () => controller.abort();
   }, [screen, role, equipmentPage, equipmentRefresh, loadEquipmentList]);
 
-  const refreshTickets = useCallback(() => setTicketRefresh((value) => value + 1), []);
-  const refreshEquipment = useCallback(() => setEquipmentRefresh((value) => value + 1), []);
+  const refreshTickets = useCallback(() => {
+    setLoadingTickets(true);
+    setPageError("");
+    setTicketRefresh((value) => value + 1);
+  }, []);
+  const refreshEquipment = useCallback(() => {
+    setLoadingEquipment(true);
+    setPageError("");
+    setEquipmentRefresh((value) => value + 1);
+  }, []);
 
   async function loadTicketDetails(ticketId) {
     const requestId = ++detailRequestId.current;
@@ -368,7 +460,57 @@ export default function Dashboard() {
     }
   }
 
+  function refreshUsers() {
+    setUsersLoaded(false);
+    setUserListError("");
+    setUsersRefresh((value) => value + 1);
+  }
+
+  async function createUser(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const payload = {
+      nome: String(data.get("nome") || "").trim(),
+      email: String(data.get("email") || "").trim(),
+      senha: String(data.get("senha") || ""),
+      tipo: data.get("tipo"),
+    };
+
+    setUserBusy(true);
+    setPageError("");
+    setNotice("");
+    try {
+      await postUser(payload);
+      form.reset();
+      setNotice("Usuário cadastrado com sucesso.");
+      refreshUsers();
+    } catch (error) {
+      setPageError(responseMessage(error, "Não foi possível cadastrar o usuário."));
+    } finally {
+      setUserBusy(false);
+    }
+  }
+
+  async function deleteUser(item) {
+    if (!window.confirm("Excluir o usuário " + item.nome + " (" + item.email + ")?")) return;
+    setUserBusy(true);
+    setPageError("");
+    setNotice("");
+    try {
+      await deleteUserRequest(item.id);
+      setNotice("Usuário excluído.");
+      refreshUsers();
+    } catch (error) {
+      setPageError(responseMessage(error, "Não foi possível excluir o usuário."));
+    } finally {
+      setUserBusy(false);
+    }
+  }
+
   function openOverview() {
+    setLoadingTickets(true);
+    setPageError("");
     setScreen("overview");
     setTicketPage(1);
     setTitleInput("");
@@ -385,8 +527,60 @@ export default function Dashboard() {
   function openEquipment() {
     setPageError("");
     setNotice("");
+    setLoadingEquipment(true);
     setEquipmentPage(1);
     setScreen("equipment");
+  }
+
+  function changeTicketPage(page) {
+    setLoadingTickets(true);
+    setPageError("");
+    setTicketPage(page);
+  }
+
+  function changeTicketTitle(value) {
+    setLoadingTickets(true);
+    setPageError("");
+    setTitleInput(value);
+    setTicketPage(1);
+  }
+
+  function changeTicketStatus(value) {
+    setLoadingTickets(true);
+    setPageError("");
+    setStatusFilter(value);
+    setTicketPage(1);
+  }
+
+  function changeTicketPriority(value) {
+    setLoadingTickets(true);
+    setPageError("");
+    setPriorityFilter(value);
+    setTicketPage(1);
+  }
+
+  function changeEquipmentPage(page) {
+    setLoadingEquipment(true);
+    setPageError("");
+    setEquipmentPage(page);
+  }
+
+  function openUsers() {
+    setPageError("");
+    setNotice("");
+    setScreen("users");
+  }
+
+  function openDashboards() {
+    setPageError("");
+    setNotice("");
+    setDashboardLoading(true);
+    setScreen("dashboards");
+  }
+
+  function refreshDashboards() {
+    setDashboardLoading(true);
+    setDashboardRefresh((value) => value + 1);
   }
 
   const pageTitle = {
@@ -395,6 +589,8 @@ export default function Dashboard() {
     "new-ticket": "Abrir chamado",
     "ticket-detail": "Detalhes do chamado",
     equipment: "Inventário de equipamentos",
+    users: "Gestão de usuários",
+    dashboards: "Dashboards",
   }[screen];
 
   if (!role) return null;
@@ -409,6 +605,8 @@ export default function Dashboard() {
         <nav className="sidebar-nav" aria-label="Navegação principal">
           <button className={"nav-link " + (screen === "overview" ? "active" : "")} type="button" onClick={openOverview}><span className="nav-icon">⌂</span>Visão geral</button>
           <button className={"nav-link " + (["tickets", "ticket-detail", "new-ticket"].includes(screen) ? "active" : "")} type="button" onClick={() => setScreen("tickets")}><span className="nav-icon">≡</span>Chamados</button>
+          {role !== "Usuario" && <button className={"nav-link " + (screen === "dashboards" ? "active" : "")} type="button" onClick={openDashboards}><span className="nav-icon">▤</span>Dashboards</button>}
+          {role === "Admin" && <button className={"nav-link " + (screen === "users" ? "active" : "")} type="button" onClick={openUsers}><span className="nav-icon">♙</span>Usuários</button>}
           {role === "Admin" && <button className={"nav-link " + (screen === "equipment" ? "active" : "")} type="button" onClick={openEquipment}><span className="nav-icon">◇</span>Equipamentos</button>}
         </nav>
         <div className="sidebar-account">
@@ -430,7 +628,7 @@ export default function Dashboard() {
           {pageError && <div className="notice notice-error" role="alert"><span className="notice-icon">!</span><span>{pageError}</span><button type="button" onClick={() => setPageError("")} aria-label="Fechar aviso">×</button></div>}
           {notice && <div className="notice notice-success" role="status"><span>{notice}</span><button type="button" onClick={() => setNotice("")} aria-label="Fechar aviso">×</button></div>}
 
-          {screen === "overview" && <OverviewPage name={name} role={role} tickets={tickets} pagination={ticketPagination} loading={loadingTickets} onOpen={openTicket} onShowAll={() => setScreen("tickets")} onNewTicket={openNewTicket} />}
+          {screen === "overview" && <OverviewPage name={name} role={role} tickets={tickets} pagination={ticketPagination} loading={loadingTickets} onOpen={openTicket} onShowAll={() => setScreen("tickets")} requesterNames={requesterNames} />}
           {screen === "tickets" && <TicketsPage
             role={role}
             tickets={tickets}
@@ -439,11 +637,12 @@ export default function Dashboard() {
             status={statusFilter}
             priority={priorityFilter}
             pagination={ticketPagination}
-            onTitleSearch={(value) => { setTitleInput(value); setTicketPage(1); }}
-            onStatus={(value) => { setStatusFilter(value); setTicketPage(1); }}
-            onPriority={(value) => { setPriorityFilter(value); setTicketPage(1); }}
-            onPage={setTicketPage}
+            onTitleSearch={changeTicketTitle}
+            onStatus={changeTicketStatus}
+            onPriority={changeTicketPriority}
+            onPage={changeTicketPage}
             onOpen={openTicket}
+            requesterNames={requesterNames}
           />}
           {screen === "new-ticket" && <NewTicketPage
             role={role}
@@ -483,7 +682,26 @@ export default function Dashboard() {
             onFormChange={updateEquipmentForm}
             onSave={saveEquipment}
             onDeactivate={deactivateEquipment}
-            onPage={setEquipmentPage}
+            onPage={changeEquipmentPage}
+          />}
+          {screen === "users" && role === "Admin" && <UserManagementPage
+            users={users}
+            loading={!usersLoaded}
+            busy={userBusy}
+            error={userListError}
+            onRefresh={refreshUsers}
+            onCreate={createUser}
+            onDelete={deleteUser}
+          />}
+          {screen === "dashboards" && role !== "Usuario" && <DashboardsPage
+            role={role}
+            tickets={dashboardTickets}
+            equipment={dashboardEquipment}
+            locals={dashboardLocals}
+            users={users}
+            loading={dashboardLoading}
+            error={dashboardError}
+            onRefresh={refreshDashboards}
           />}
         </div>
       </main>

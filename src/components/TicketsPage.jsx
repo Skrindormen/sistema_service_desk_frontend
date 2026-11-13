@@ -1,10 +1,9 @@
-import React from "react";
 import TicketTable from "./TicketTable";
 import PaginationControls from "./PaginationControls";
 
 export default function TicketsPage({
   role, tickets, loading, titleSearch, status, priority, pagination,
-  onTitleSearch, onStatus, onPriority, onPage, onOpen,
+  onTitleSearch, onStatus, onPriority, onPage, onOpen, requesterNames,
 }) {
   return (
     <>
@@ -53,6 +52,7 @@ export default function TicketsPage({
           tickets={tickets}
           loading={loading}
           onOpen={onOpen}
+          requesterNames={requesterNames}
           emptyMessage="Nenhum chamado corresponde aos filtros selecionados."
         />
         <PaginationControls

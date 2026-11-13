@@ -1,39 +1,15 @@
-import React, { useMemo, useState } from "react";
-
-function normalize(value) {
-  return (value || "")
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase();
-}
-
-function findLab(locals, labNumber) {
-  const expected = Number(labNumber);
-  return locals.find((local) => {
-    const name = normalize(local.nome);
-    const numbers = name.match(/\d+/g) || [];
-    return (name.includes("lab") || name.includes("laboratorio")) &&
-      numbers.some((number) => Number(number) === expected);
-  });
-}
-
-function findMachine(equipment, localId, machine) {
-  return equipment.find((item) => {
-    if (String(item.id_local) !== String(localId)) return false;
-    const name = normalize(item.nome);
-    if (machine === "professor") return name.includes("professor") || name.includes("docente");
-    const numbers = name.match(/\d+/g) || [];
-    const machineName = name.includes("maquina") || name.includes("computador") ||
-      name.includes("estacao") || name.includes("pc");
-    return machineName && numbers.some((number) => Number(number) === Number(machine));
-  });
-}
+import { useMemo, useState } from "react";
+import {
+  findLabLocal, frontendLabName, labOptionName, LAB_NUMBERS,
+} from "../utils/labLocations";
+import { createTicketPayload } from "../utils/newTicketPayload";
+import { findMachineForSelection } from "../utils/equipmentMatching";
 
 const MACHINE_OPTIONS = [
-  { value: "professor", label: "Máquina do professor" },
+  { value: "professor", label: "Computador do professor" },
   ...Array.from({ length: 30 }, (_, index) => ({
     value: String(index + 1),
-    label: "Máquina " + (index + 1),
+    label: "Computador " + (index + 1),
   })),
 ];
 
@@ -48,15 +24,15 @@ export default function NewTicketPage({
   const [machine, setMachine] = useState("");
   const [formError, setFormError] = useState("");
 
-  const selectedLab = useMemo(() => findLab(locals, lab), [locals, lab]);
+  const selectedLab = useMemo(() => findLabLocal(locals, lab), [locals, lab]);
   const matchingMachine = useMemo(
-    () => findMachine(equipment, selectedLab?.id, machine),
+    () => findMachineForSelection(equipment, selectedLab?.id, machine),
     [equipment, selectedLab, machine],
   );
 
   function changeContext(value) {
     setContext(value);
-    if (value === "pessoal") setTicketType("Software");
+    if (value !== "universidade") setTicketType("Software");
     setLab("");
     setMachine("");
     setFormError("");
@@ -68,44 +44,26 @@ export default function NewTicketPage({
     setFormError("");
 
     const formData = new FormData(event.currentTarget);
-    const type = formData.get("tipo");
-    if (type === "Hardware" && context !== "universidade") {
-      setFormError("Para Hardware, selecione uma solicitação da universidade e indique o local do ativo.");
+    const result = createTicketPayload({
+      fields: {
+        title: formData.get("titulo"),
+        type: formData.get("tipo"),
+        priority: formData.get("prioridade"),
+        description: formData.get("descricao"),
+        level: formData.get("nivel_atendimento"),
+      },
+      context,
+      personalCategory,
+      role,
+      selectedLab,
+      selectedLabName: selectedLab ? frontendLabName(selectedLab) : "",
+      matchingMachine,
+    });
+    if (result.error) {
+      setFormError(result.error);
       return;
     }
-    if (!context) {
-      setFormError("Selecione se a solicitação é pessoal ou da universidade.");
-      return;
-    }
-
-    const payload = {
-      titulo: formData.get("titulo"),
-      tipo: type,
-      prioridade: formData.get("prioridade"),
-      descricao: formData.get("descricao"),
-    };
-
-    if (context === "pessoal") {
-      payload.descricao =
-        "Contexto: pessoal — " + personalCategory + "\n\n" + payload.descricao;
-    } else {
-      if (!selectedLab) {
-        setFormError("Não encontrei esse laboratório na lista da API. Confira o cadastro do local.");
-        return;
-      }
-      if (!matchingMachine) {
-        setFormError("Não encontrei essa máquina vinculada ao laboratório selecionado na lista da API.");
-        return;
-      }
-      payload.id_local = Number(selectedLab.id);
-      payload.id_equipamento = Number(matchingMachine.id);
-      payload.descricao =
-        "Contexto: universidade — Lab " + lab + ", " + matchingMachine.nome +
-        "\n\n" + payload.descricao;
-    }
-
-    if (role !== "Usuario") payload.nivel_atendimento = formData.get("nivel_atendimento") || "N1";
-    onSubmit(payload);
+    onSubmit(result.payload);
   }
 
   return (
@@ -132,8 +90,8 @@ export default function NewTicketPage({
           <label className="field">
             <span>Categoria da solicitação</span>
             <select value={personalCategory} onChange={(event) => setPersonalCategory(event.target.value)}>
-              <option>Conta e acessos</option>
-              <option>Outra solicitação individual</option>
+              <option value="Conta ou acesso">Conta ou acesso</option>
+              <option value="Outra solicitação individual">Outra solicitação individual</option>
             </select>
           </label>
         )}
@@ -178,12 +136,12 @@ export default function NewTicketPage({
                 disabled={catalogLoading || !locals.length}
               >
                 <option value="">{catalogLoading ? "Carregando locais..." : "Selecione o laboratório"}</option>
-                {[1, 2, 3, 4, 5].map((number) => (
-                  <option key={number} value={number}>Lab {number}</option>
+                {LAB_NUMBERS.map((number) => (
+                  <option key={number} value={number}>{labOptionName(locals, number)}</option>
                 ))}
               </select>
               {lab && !selectedLab && !catalogLoading && (
-                <small className="field-error">Lab {lab} não foi encontrado nos locais cadastrados na API.</small>
+                <small className="field-error">{labOptionName(locals, lab)} não foi encontrado nos locais cadastrados na API.</small>
               )}
             </label>
             <label className="field">
@@ -194,18 +152,18 @@ export default function NewTicketPage({
                 required
                 disabled={!selectedLab || catalogLoading}
               >
-                <option value="">Selecione a máquina</option>
+                <option value="">Selecione o computador</option>
                 {MACHINE_OPTIONS.map((option) => {
-                  const found = findMachine(equipment, selectedLab?.id, option.value);
+                  const found = findMachineForSelection(equipment, selectedLab?.id, option.value);
                   return (
                     <option key={option.value} value={option.value} disabled={!found}>
-                      {option.label}{found ? "" : " — sem cadastro para este laboratório"}
+                      {option.label}{found ? "" : " — sem cadastro neste laboratório"}
                     </option>
                   );
                 })}
               </select>
               {machine && !matchingMachine && !catalogLoading && (
-                <small className="field-error">A máquina escolhida não está vinculada ao laboratório na API.</small>
+                <small className="field-error">O computador escolhido não está vinculado ao laboratório na API.</small>
               )}
             </label>
           </div>
